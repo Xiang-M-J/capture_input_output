@@ -30,24 +30,58 @@ void main() {
   runApp(const MyApp());
 }
 
+class NumInfo{
+  int frameSize;
+  int numFrames = 0;
+  int numPoints = 0;
+  NumInfo(this.frameSize);
+  void update(int nf, int np){
+    numFrames += nf;
+    if (np != 0){
+      numPoints += np;
+      numFrames += numPoints ~/ frameSize;
+      numPoints = numPoints % frameSize;
+    }
+  }
+  void reset(){
+    numFrames = 0;
+    numPoints = 0;
+  }
+}
+
+class U8List{
+  Uint8List data;
+  int frameSize;
+  int nf = 0;
+  int np = 0;
+
+  U8List(this.data, this.frameSize) {
+    int length = data.length;
+    nf = length ~/ frameSize;
+    np = length % frameSize;
+  }
+
+}
+
 class SyncFileStream {
-  List<int>? fileCache;
+  List<U8List>? fileCache;
   int sampleRate = 16000;
-  List<int>? startCache;
+  List<U8List>? startCache;
   int fileCacheLength = 0;
   File? file;
   IOSink? sink;
   String fileName = "";
   String? filePath;
-  int numSaveFrames = 0;
-  int numSavePoints = 0;
+  late NumInfo info;
+
   int mode = 0; // mode: 0 将录制数据存入缓存， mode: 1 将数据存入文件
   int maxFileCacheLength = 0;
   int frameSize = 0;
 
   Future<void> init() async {
-    fileCache = List<int>.empty(growable: true);
-    startCache = List<int>.empty(growable: true);
+    fileCache = [];
+    startCache = [];
+
     mode = 0;
     file = await createFile(fileName);
     filePath = file?.path;
@@ -65,8 +99,7 @@ class SyncFileStream {
     filePath = null;
     sink = null;
     mode = 0;
-    numSaveFrames = 0;
-    numSavePoints = 0;
+    info.reset();
   }
 
   Future<File> createFile(String name) async {
@@ -91,69 +124,69 @@ class SyncFileStream {
 
   void update(Uint8List data, int? numPadFrames, int? numPadPoints) {
     if (mode == 0) {
-      startCache?.addAll(data);
+      startCache?.add(U8List(data, frameSize));
       if (numPadFrames != null && numPadPoints != null) {
         print("npf: $numPadFrames, npp: $numPadPoints");
 
         if (numPadPoints > 0) {
           Uint8List pad = Uint8List(numPadPoints);
-          numSavePoints = pad.length;
+          info.update(0, pad.length);
           sink!.add(pad);
         }
         if (numPadFrames > 0) {
           sink!.add(Uint8List(numPadFrames * frameSize));
-          numSaveFrames += numPadFrames;
+          info.update(numPadFrames, 0);
         }
-        int len = startCache!.length;
-        numSaveFrames += len ~/ frameSize;
-        numSavePoints += len % frameSize;
-        if (numSavePoints > frameSize){
-          numSaveFrames += numSavePoints ~/ frameSize;
-          numSavePoints = numSavePoints % frameSize;
+
+        for(U8List sc in startCache!){
+          info.update(sc.nf, sc.np);
+          sink!.add(sc.data);
         }
-        sink!.add(startCache!);
-        print("numSaveFrames: $numSaveFrames, numSavePoints: $numSavePoints");
+
+        print("numSaveFrames: ${info.numFrames}, numSavePoints: ${info.numPoints}");
         mode = 1;
       }
     } else if (mode == 1) {
-      fileCache!.addAll(data);
-      fileCacheLength += data.length;
+      if (fileCacheLength < maxFileCacheLength) {
+        fileCache!.add(U8List(data, frameSize));
+        fileCacheLength += 1;
+      }else {
+        U8List data = fileCache![0];
 
-      if (fileCacheLength >= maxFileCacheLength){
-        int numFrames = (fileCacheLength - maxFileCacheLength) ~/ frameSize + 1;
-        int saveLength = numFrames * frameSize;
-        List<int> subList = fileCache!.sublist(0, saveLength);
-        sink!.add(subList);
-        numSaveFrames += numFrames;
-        fileCache!.removeRange(0, saveLength);
-        fileCacheLength -= saveLength;
+        sink!.add(data.data);
+        info.update(data.nf, data.np);
+        fileCache!.removeAt(0);
+        fileCacheLength -= 1;
       }
     }
   }
 
   void close(int numSaveFrames, int numSavePoints) {
-    if (numSaveFrames >= 0){
-      if (numSaveFrames * frameSize >= fileCacheLength) {
-        sink!.add(Uint8List.fromList(fileCache!));
-        this.numSaveFrames += fileCacheLength ~/ frameSize;
-      } else {
-        int frameLength = numSaveFrames * frameSize;
-        sink!.add(Uint8List.fromList(fileCache!.sublist(0, frameLength)));
-        this.numSaveFrames += numSaveFrames;
-        if (numSavePoints > 0) {
-          sink!.add(Uint8List.fromList(fileCache!.sublist(frameLength, frameLength + numSavePoints)));
-        }
-        this.numSavePoints += numSavePoints;
-      }
-    }else{
-      sink!.add(Uint8List.fromList(fileCache!));
-    }
+    // if (numSaveFrames >= 0){
+    //   if (numSaveFrames * frameSize >= fileCacheLength) {
+    //     for (U8List fc in fileCache!){
+    //       sink!.add(fc.data);
+    //       info.update(fc.nf, fc.np);
+    //     }
+    //   } else {
+    //     int frameLength = numSaveFrames * frameSize;
+    //     sink!.add(Uint8List.fromList(fileCache!.sublist(0, frameLength)));
+    //     this.numSaveFrames += numSaveFrames;
+    //     if (numSavePoints > 0) {
+    //       sink!.add(Uint8List.fromList(fileCache!.sublist(frameLength, frameLength + numSavePoints)));
+    //     }
+    //     this.numSavePoints += numSavePoints;
+    //   }
+    // }else{
+    //   sink!.add(Uint8List.fromList(fileCache!));
+    // }
     sink?.close();
   }
 
   SyncFileStream(this.sampleRate, this.fileName) {
     frameSize = (sampleRate * 0.02 * 2).toInt();
-    maxFileCacheLength = frameSize * 25;
+    maxFileCacheLength = 25;
+    info = NumInfo(frameSize);
   }
 }
 
@@ -535,28 +568,28 @@ class _MyHomePageState extends State<MyHomePage> {
 
   List<int> calculateSaveInfo() {
     List<int> saveInfo = [0, 0, 0, 0]; // input_frame, input_point, output_frame, output_point
-    int inputSaveFrames = inputFileStream!.numSaveFrames;
-    int inputSavePoints = inputFileStream!.numSavePoints;
-    int inputFileCacheLength = inputFileStream!.fileCacheLength ~/ inputFileStream!.frameSize;
-    int outputSaveFrames = outputFileStream!.numSaveFrames;
-    int outputSavePoints = outputFileStream!.numSavePoints;
-    int outputFileCacheLength = outputFileStream!.fileCacheLength ~/ outputFileStream!.frameSize;
-
-    int inputMaxFrames = inputSaveFrames + inputFileCacheLength;
-
-    int outputMaxFrames = outputSaveFrames + outputFileCacheLength;
-
-    int maxFrames = min(inputMaxFrames, outputMaxFrames);
-    saveInfo[0] = maxFrames - inputSaveFrames;
-    saveInfo[2] = maxFrames - outputSaveFrames;
-    if (inputSavePoints > 0) {
-      saveInfo[0] -= 1;
-      saveInfo[1] = inputFileStream!.frameSize - inputSavePoints;
-    }
-    if (outputSavePoints > 0) {
-      saveInfo[1] -= 1;
-      saveInfo[3] = outputFileStream!.frameSize - outputSavePoints;
-    }
+    // int inputSaveFrames = inputFileStream!.numSaveFrames;
+    // int inputSavePoints = inputFileStream!.numSavePoints;
+    // int inputFileCacheLength = inputFileStream!.fileCacheLength ~/ inputFileStream!.frameSize;
+    // int outputSaveFrames = outputFileStream!.numSaveFrames;
+    // int outputSavePoints = outputFileStream!.numSavePoints;
+    // int outputFileCacheLength = outputFileStream!.fileCacheLength ~/ outputFileStream!.frameSize;
+    //
+    // int inputMaxFrames = inputSaveFrames + inputFileCacheLength;
+    //
+    // int outputMaxFrames = outputSaveFrames + outputFileCacheLength;
+    //
+    // int maxFrames = min(inputMaxFrames, outputMaxFrames);
+    // saveInfo[0] = maxFrames - inputSaveFrames;
+    // saveInfo[2] = maxFrames - outputSaveFrames;
+    // if (inputSavePoints > 0) {
+    //   saveInfo[0] -= 1;
+    //   saveInfo[1] = inputFileStream!.frameSize - inputSavePoints;
+    // }
+    // if (outputSavePoints > 0) {
+    //   saveInfo[1] -= 1;
+    //   saveInfo[3] = outputFileStream!.frameSize - outputSavePoints;
+    // }
     return saveInfo;
   }
 
@@ -582,8 +615,8 @@ class _MyHomePageState extends State<MyHomePage> {
     inputFileStream?.close(saveInfo[0], saveInfo[1]);
     outputFileStream?.close(saveInfo[2], saveInfo[3]);
     processFileStream?.close(saveInfo[0], saveInfo[1]);
-    print("isf: ${inputFileStream!.numSaveFrames}, isp: ${inputFileStream!.numSavePoints}");
-    print("osf: ${outputFileStream!.numSaveFrames}, osp: ${outputFileStream!.numSavePoints}");
+    // print("isf: ${inputFileStream!.numSaveFrames}, isp: ${inputFileStream!.numSavePoints}");
+    // print("osf: ${outputFileStream!.numSaveFrames}, osp: ${outputFileStream!.numSavePoints}");
     // print(outputStartTime!.difference(inputStartTime!));
     // print(outputEndTime!.difference(inputEndTime!));
     inputStream.reset();

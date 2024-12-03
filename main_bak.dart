@@ -111,15 +111,15 @@ class SyncFileStream {
           numSaveFrames += numSavePoints ~/ frameSize;
           numSavePoints = numSavePoints % frameSize;
         }
-        sink!.add(startCache!);
+        sink!.add(Uint8List.fromList(startCache!));
         print("numSaveFrames: $numSaveFrames, numSavePoints: $numSavePoints");
         mode = 1;
       }
     } else if (mode == 1) {
-      fileCache!.addAll(data);
-      fileCacheLength += data.length;
-
-      if (fileCacheLength >= maxFileCacheLength){
+      if (fileCacheLength < maxFileCacheLength) {
+        fileCache!.addAll(data);
+        fileCacheLength += data.length;
+      }else {
         int numFrames = (fileCacheLength - maxFileCacheLength) ~/ frameSize + 1;
         int saveLength = numFrames * frameSize;
         List<int> subList = fileCache!.sublist(0, saveLength);
