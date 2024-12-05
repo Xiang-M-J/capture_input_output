@@ -76,21 +76,19 @@ class _RecordOutputState extends State<RecordOutput> {
           TextButton(
               onPressed: () async {
                 allData.clear();
-                bool start = await SystemAudioRecorder.startRecord("test",
-                    titleNotification: "titleNotification",
-                    messageNotification: "messageNotification",
-                    sampleRate: 16000);
+                bool isOk = await SystemAudioRecorder.requestRecord("test");
+                if (isOk){
+                  bool start = await SystemAudioRecorder.startRecord;
 
-                if (_audioSubscription == null) {
-                  _audioSubscription =
-                      SystemAudioRecorder.audioStream.receiveBroadcastStream({"config": "null"}).listen((data) {
-                        // print("${data.length}");
-                        allData.addAll(data);
-                      });
+                  _audioSubscription ??= SystemAudioRecorder.audioStream.receiveBroadcastStream({}).listen((data) {
+                    // print("${data.length}");
+                    allData.addAll(data);
+                  });
+                  setState(() {
+                    isRecording = true;
+                  });
                 }
-                setState(() {
-                  isRecording = true;
-                });
+
                 // if (start) {
                 //   _audioSubscription = SystemAudioRecorder.audioStream.receiveBroadcastStream().listen((audioData){
                 //     print("Received audio data: ${audioData.length} bytes");
