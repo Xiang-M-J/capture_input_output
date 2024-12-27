@@ -27,6 +27,13 @@ abstract class SystemAudioRecorderPlatform extends PlatformInterface {
     throw UnimplementedError('platformVersion() has not been implemented.');
   }
 
+  Future<bool> openRecorder({
+    int sampleRate = 16000,
+    int bufferSize = 640
+}){
+    throw UnimplementedError();
+  }
+
   Future<bool> startRecord(){
     throw UnimplementedError();
   }
@@ -35,12 +42,15 @@ abstract class SystemAudioRecorderPlatform extends PlatformInterface {
       String name, {
         String notificationTitle = "",
         String notificationMessage = "",
-        int sampleRate = 44100
       }) {
     throw UnimplementedError();
   }
 
-  Future<String> get stopRecord {
+  Future<String> stopRecord() {
+    throw UnimplementedError();
+  }
+
+  Future<void> dispose(){
     throw UnimplementedError();
   }
 }

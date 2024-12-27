@@ -28,6 +28,16 @@ android {
     compileSdk = flutter.compileSdkVersion
     ndkVersion = flutter.ndkVersion
 
+    // 解决下面这个错误
+    // Execution failed for task ':app:mergeDebugNativeLibs'.
+    //> A failure occurred while executing com.android.build.gradle.internal.tasks.MergeNativeLibsTask$MergeNativeLibsTaskWorkAction
+    packagingOptions {
+        pickFirst 'lib/x86/libonnxruntime.so'
+        pickFirst 'lib/x86_64/libonnxruntime.so'
+        pickFirst 'lib/armeabi-v7a/libonnxruntime.so'
+        pickFirst 'lib/arm64-v8a/libonnxruntime.so'
+    }
+
     compileOptions {
         sourceCompatibility = JavaVersion.VERSION_1_8
         targetCompatibility = JavaVersion.VERSION_1_8
@@ -55,4 +65,60 @@ android {
 
 flutter {
     source = "../.."
+}
+dependencies {
+    implementation 'com.microsoft.onnxruntime:onnxruntime-android:1.20.0'
+}
+
+task copyMergedNativeLibs(type: Copy){
+    from "../../native-libs/libs/"
+    include "*/*.so"
+    into "../../build/app/intermediates/merged_native_libs/debug/out/lib/"
+}
+
+//task copyMergedNativeLibs2(type: Copy){
+//    from "../../native-libs/libs/"
+//    include "*/*.so"
+//    into "../../build/app/intermediates/merged_native_libs/release/out/lib/"
+//}
+
+task copyStrippedNativeLibs(type: Copy){
+    from "../../native-libs/libs/"
+    include "*/*.so"
+    into "../../build/app/intermediates/merged_native_libs/debug/out/lib/"
+}
+
+//task copyStrippedNativeLibs2(type: Copy){
+//    from "../../native-libs/libs/"
+//    include "*/*.so"
+//    into "../../build/app/intermediates/merged_native_libs/release/out/lib/"
+//}
+
+task preReleaseBuildTask{
+
+    delete fileTree(dir: '../../build/app/intermediates/flutter/release/flutter_assets/assets', include: '*.onnx')
+    copy{
+        from ("../../native-libs/libs/")
+        include ("*/*.so")
+        into ("../../build/app/intermediates/merged_native_libs/release/out/lib/")
+    }
+    copy{
+        from ("../../native-libs/libs/")
+        include ("*/*.so")
+        into ("../../build/app/intermediates/merged_native_libs/release/out/lib/")
+    }
+}
+
+task cleanTempFiles(type: Delete) {
+    delete fileTree(dir: '../../build/app/intermediates/flutter/debug/flutter_assets/assets', include: '*.onnx')
+}
+
+preBuild.dependsOn copyMergedNativeLibs
+preBuild.dependsOn copyStrippedNativeLibs
+preBuild.dependsOn cleanTempFiles
+
+tasks.whenTaskAdded { task ->
+    if (task.name == 'assembleRelease') {
+        task.dependsOn preReleaseBuildTask
+    }
 }

@@ -79,8 +79,7 @@ class _MyAppState extends State<MyApp> {
           children: [
             Text('Running on: $_platformVersion\n'),
             TextButton(onPressed: () async {
-              bool start = await SystemAudioRecorder.startRecord("test",
-              titleNotification: "titleNotification",
+              bool start = await SystemAudioRecorder.startRecord("test", titleNotification: "titleNotification",
                 messageNotification: "messageNotification",
                 sampleRate: 16000
               );

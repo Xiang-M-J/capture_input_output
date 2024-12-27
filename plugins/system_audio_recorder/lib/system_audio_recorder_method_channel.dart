@@ -15,28 +15,41 @@ class MethodChannelSystemAudioRecorder extends SystemAudioRecorderPlatform {
     return version;
   }
 
+  @override
+  Future<bool> openRecorder({int sampleRate = 16000, int bufferSize = 640}) async {
+    final bool isOpen = await methodChannel.invokeMethod("openRecorder", {
+      "sampleRate": sampleRate, "bufferSize": bufferSize
+    });
+    return isOpen;
+  }
+
+  @override
   Future<bool> requestRecord(
       String name, {
         String notificationTitle = "",
-        String notificationMessage = "",
-        int sampleRate = 44100
+        String notificationMessage = ""
       }) async {
     final bool start = await methodChannel.invokeMethod('requestRecord', {
       "name": name,
       "title": notificationTitle,
       "message": notificationMessage,
-      "sampleRate": sampleRate
     });
     return start;
   }
 
+  @override
   Future<bool> startRecord() async{
     final bool start = await methodChannel.invokeMethod("startRecord");
     return start;
   }
 
+  @override
+  Future<void> dispose() async {
+    await methodChannel.invokeMethod("dispose");
+  }
 
-  Future<String> get stopRecord async {
+  @override
+  Future<String> stopRecord() async {
     final String path = await methodChannel.invokeMethod('stopRecord');
     return path;
   }

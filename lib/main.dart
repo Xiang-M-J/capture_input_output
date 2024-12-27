@@ -1,19 +1,18 @@
 import 'dart:async';
-import 'dart:collection';
-import 'dart:ffi';
 import 'dart:io';
 import 'dart:isolate';
 import 'dart:math';
+import 'dart:typed_data';
 
 import 'package:audio_session/audio_session.dart';
+import 'package:capture_input_ouput/stream_utils.dart';
 import 'package:capture_input_ouput/text_painter_button.dart';
-import 'package:flutter/cupertino.dart';
-import 'package:flutter/foundation.dart';
+import 'package:capture_input_ouput/utils/msadpcrn2.dart';
+import 'package:capture_input_ouput/utils/msadpcrnRknn.dart';
+import 'package:capture_input_ouput/utils/type_converter.dart';
 import 'package:flutter/material.dart';
-import 'package:flutter/widgets.dart';
-import 'package:path_provider/path_provider.dart';
+import 'package:onnxruntime/onnxruntime.dart';
 import 'package:permission_handler/permission_handler.dart';
-import 'dart:typed_data';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_sound/flutter_sound.dart';
@@ -27,170 +26,13 @@ import 'package:file_picker/file_picker.dart';
 
 void main() {
   WidgetsFlutterBinding.ensureInitialized();
+
   runApp(const MyApp());
 }
 
-class SyncFileStream {
-  List<int>? fileCache;
-  int sampleRate = 16000;
-  List<int>? startCache;
-  int fileCacheLength = 0;
-  File? file;
-  IOSink? sink;
-  String fileName = "";
-  String? filePath;
-  int numSaveFrames = 0;
-  int numSavePoints = 0;
-  int mode = 0; // mode: 0 将录制数据存入缓存， mode: 1 将数据存入文件
-  int maxFileCacheLength = 0;
-  int frameSize = 0;
+const String mode = "rknn";
 
-  Future<void> init() async {
-    fileCache = List<int>.empty(growable: true);
-    startCache = List<int>.empty(growable: true);
-    mode = 0;
-    file = await createFile(fileName);
-    filePath = file?.path;
-    fileCacheLength = 0;
-    sink = file?.openWrite();
-  }
-
-  Future<void> reset() async {
-    fileCache?.clear();
-    fileCache = null;
-    fileCacheLength = 0;
-    startCache?.clear();
-    startCache = null;
-    file = null;
-    filePath = null;
-    sink = null;
-    mode = 0;
-    numSaveFrames = 0;
-    numSavePoints = 0;
-  }
-
-  Future<File> createFile(String name) async {
-    try {
-      String path = "/storage/emulated/0/$name";
-      var outputFile = File(path);
-      if (outputFile.existsSync()) {
-        await outputFile.delete();
-      }
-      return outputFile;
-    } catch (e) {
-      var tempDir = await getExternalStorageDirectory();
-
-      String path = '${tempDir?.parent.path}/$name';
-      var outputFile = File(path);
-      if (outputFile.existsSync()) {
-        await outputFile.delete();
-      }
-      return outputFile;
-    }
-  }
-
-  void update(Uint8List data, int? numPadFrames, int? numPadPoints) {
-    if (mode == 0) {
-      startCache?.addAll(data);
-      if (numPadFrames != null && numPadPoints != null) {
-        print("npf: $numPadFrames, npp: $numPadPoints");
-
-        if (numPadPoints > 0) {
-          Uint8List pad = Uint8List(numPadPoints);
-          numSavePoints = pad.length;
-          sink!.add(pad);
-        }
-        if (numPadFrames > 0) {
-          sink!.add(Uint8List(numPadFrames * frameSize));
-          numSaveFrames += numPadFrames;
-        }
-        int len = startCache!.length;
-        numSaveFrames += len ~/ frameSize;
-        numSavePoints += len % frameSize;
-        if (numSavePoints > frameSize){
-          numSaveFrames += numSavePoints ~/ frameSize;
-          numSavePoints = numSavePoints % frameSize;
-        }
-        sink!.add(startCache!);
-        print("numSaveFrames: $numSaveFrames, numSavePoints: $numSavePoints");
-        mode = 1;
-      }
-    } else if (mode == 1) {
-      fileCache!.addAll(data);
-      fileCacheLength += data.length;
-
-      if (fileCacheLength >= maxFileCacheLength){
-        int numFrames = (fileCacheLength - maxFileCacheLength) ~/ frameSize + 1;
-        int saveLength = numFrames * frameSize;
-        List<int> subList = fileCache!.sublist(0, saveLength);
-        sink!.add(subList);
-        numSaveFrames += numFrames;
-        fileCache!.removeRange(0, saveLength);
-        fileCacheLength -= saveLength;
-      }
-    }
-  }
-
-  void close(int numSaveFrames, int numSavePoints) {
-    if (numSaveFrames >= 0){
-      if (numSaveFrames * frameSize >= fileCacheLength) {
-        sink!.add(Uint8List.fromList(fileCache!));
-        this.numSaveFrames += fileCacheLength ~/ frameSize;
-      } else {
-        int frameLength = numSaveFrames * frameSize;
-        sink!.add(Uint8List.fromList(fileCache!.sublist(0, frameLength)));
-        this.numSaveFrames += numSaveFrames;
-        if (numSavePoints > 0) {
-          sink!.add(Uint8List.fromList(fileCache!.sublist(frameLength, frameLength + numSavePoints)));
-        }
-        this.numSavePoints += numSavePoints;
-      }
-    }else{
-      sink!.add(Uint8List.fromList(fileCache!));
-    }
-    sink?.close();
-  }
-
-  SyncFileStream(this.sampleRate, this.fileName) {
-    frameSize = (sampleRate * 0.02 * 2).toInt();
-    maxFileCacheLength = frameSize * 25;
-  }
-}
-
-class FixedLengthStream {
-  List<double>? stream;
-  int offset = 0;
-  int maxLength = 0;
-  int nowLength = 0;
-  void init(sr) {
-    stream = [];
-    offset = 0;
-    nowLength = 0;
-    maxLength = sr * 4;
-  }
-
-  void update(List<double> data) {
-    stream?.addAll(data);
-    nowLength += data.length;
-    if (nowLength > maxLength) {
-      stream = stream!.sublist(nowLength - maxLength);
-      nowLength = maxLength;
-    }
-    offset = (offset + 1) % maxLength;
-  }
-
-  void reset() {
-    stream?.clear();
-    offset = 0;
-    nowLength = 0;
-  }
-
-  void dispose() {
-    stream?.clear();
-    stream = null;
-  }
-}
-
+// 127.0.0.1:5037
 class MyApp extends StatelessWidget {
   const MyApp({super.key});
   // This widget is the root of your application.
@@ -207,6 +49,69 @@ class MyApp extends StatelessWidget {
   }
 }
 
+class _IsolateData {
+  final RootIsolateToken token;
+  final Function(SendPort port) function;
+  final SendPort answerPort;
+
+  _IsolateData({
+    required this.token,
+    required this.function,
+    required this.answerPort,
+  });
+}
+
+void _isolateEntry(_IsolateData isolateData) async {
+  BackgroundIsolateBinaryMessenger.ensureInitialized(isolateData.token);
+  await isolateData.function(isolateData.answerPort);
+}
+
+void inferenceTask(SendPort port) async {
+  // initOrtEnv();
+
+  // MsaDpcrn2 msaAce = MsaDpcrn2();
+  MsaDpcrnRknn msaAce = MsaDpcrnRknn();
+  msaAce.init();
+
+  final receivePort = ReceivePort();
+  port.send(receivePort.sendPort);
+
+  await for (var msg in receivePort) {
+    if (msg is String) {
+      if (msg == "exit") {
+        msaAce.release();
+        // port.send("will release");
+        // releaseOrtEnv();
+        Isolate.exit(receivePort.sendPort);
+      } else if (msg == "reset") {
+        msaAce.reset();
+        // port.send("has reset");
+      }
+    } else if (msg is Uint8List) {
+      msaAce.initModelByBuffer(msg);
+    } else if (msg is List<List<int>>) {
+      List<double>? result = await msaAce.predictMultiFrames2(msg);
+      // List<double>? result = msaAce.testPredictMultiFrames();
+      port.send(result);
+    } else {
+      print("unknown msg type");
+    }
+  }
+}
+
+Future<List<int>> parsePcm16(String path) async {
+  final byteData = await rootBundle.load("assets/$path");
+  Uint8List bytes = byteData.buffer.asUint8List();
+  final sampleCount = bytes.length ~/ 2;
+  List<int> samples = [];
+  for (var i = 0; i < sampleCount; i++) {
+    // 每两个字节解析一个 16 位有符号整数（小端序）
+    final sample = bytes.buffer.asByteData().getInt16(i * 2, Endian.little);
+    samples.add(sample);
+  }
+  return samples;
+}
+
 class MyHomePage extends StatefulWidget {
   const MyHomePage({super.key, required this.title});
 
@@ -218,26 +123,23 @@ class MyHomePage extends StatefulWidget {
 
 class _MyHomePageState extends State<MyHomePage> {
   FlutterSoundPlayer? _mPlayer = FlutterSoundPlayer();
-  FlutterSoundRecorder? _mRecorder = FlutterSoundRecorder();
   bool _mPlayerIsInited = false;
-  bool _mRecorderIsInited = false;
   String? inputPath;
   String? outputPath;
   String? processedPath;
   String? tempPath;
   int frameMs = 20; // 20ms
 
-  XTypeGroup typeGroup = const XTypeGroup(label: "audio", extensions: <String>['mp3']);
-
   bool _mplaybackReady = false;
   //String? _mPath;
-  StreamSubscription? _mRecordingDataSubscription;
   //Uint8List buffer = [];
   int sampleRate = 16000;
 
-  int frameSize = 640;
+  int frameSize = 256;
+  int bytesSize = 512;
 
-  int maxDisplaySize = 16000 * 4;
+  int maxDisplaySize = 16000 * 2;
+  int maxDisplaySeconds = 2;
 
   List<double> inputCache = List.empty(growable: true);
   List<double> processCache = List.empty(growable: true);
@@ -247,15 +149,15 @@ class _MyHomePageState extends State<MyHomePage> {
   FixedLengthStream outputStream = FixedLengthStream();
   FixedLengthStream processStream = FixedLengthStream();
 
-  StreamSubscription? _audioSubscription;
+  StreamSubscription? audioSubscription;
   bool isRecording = false;
   Timer? timer;
   String? chooseFilePath;
 
   DateTime? inputClickStartTime;
   DateTime? outputClickStartTime;
-  DateTime? inputStartTime;
-  DateTime? outputStartTime;
+  int? inputStartTime;
+  int? outputStartTime;
   DateTime? inputEndTime;
   DateTime? outputEndTime;
   SyncFileStream? inputFileStream;
@@ -264,6 +166,16 @@ class _MyHomePageState extends State<MyHomePage> {
   bool syncInputStart = true;
   bool syncOutputStart = true;
   double space = 0;
+  bool firstPlay = true;
+  bool playAudio = false;
+  final stopWatch = Stopwatch();
+  // MsaDpcrn? msaAce;
+  List<int> usedTimes = [];
+  ReceivePort? receivePort;
+  SendPort? sendPort;
+  int pointSpace = 64; // 绘图时每隔pointSpace个点画一次
+  bool isProcess = true;
+  int padFramesNum = 25; // 手机上是10
 
   @override
   void initState() {
@@ -276,13 +188,83 @@ class _MyHomePageState extends State<MyHomePage> {
       });
     });
     _openRecorder();
-    inputStream.init(sampleRate);
-    outputStream.init(sampleRate);
-    processStream.init(sampleRate);
+    inputStream.init(sampleRate, maxDisplaySeconds);
+    outputStream.init(sampleRate, maxDisplaySeconds);
+    processStream.init(sampleRate, maxDisplaySeconds);
     inputFileStream = SyncFileStream(sampleRate, "record_input.pcm");
     processFileStream = SyncFileStream(sampleRate, "process_input.pcm");
     outputFileStream = SyncFileStream(sampleRate, "record_output.pcm");
-    space = sampleRate / 1e6;
+    space = sampleRate / 1e3;
+    initOrtEnv();
+    initPort();
+    // doSomething();
+  }
+
+  void initOrtEnv() {
+    OrtEnv.instance.init();
+    OrtEnv.instance.availableProviders().forEach((element) {
+      print('onnx provider=$element');
+    });
+  }
+
+  void releaseOrtEnv() {
+    OrtEnv.instance.release();
+  }
+
+  Future<void> doSomething() async {
+    // await processFileStream?.init();
+    // processFileStream?.reset();
+    // sendPort?.send("reset");
+    //
+    // processedPath = processFileStream?.filePath;
+    // List<int> micFrame = List.generate(1024, (e) => e * 10 + 100);
+    // List<int> refFrame = List.generate(1024, (e) => e * 10);
+    //
+    // sendPort?.send([micFrame.sublist(256, 512), refFrame.sublist(256, 512)]);
+    // sendPort?.send([micFrame.sublist(512, 768), refFrame.sublist(512, 768)]);
+    // sendPort?.send([micFrame.sublist(768, 1024), refFrame.sublist(768, 1024)]);
+    processFileStream?.reset();
+    sendPort?.send("reset");
+    await processFileStream?.init();
+    processedPath = processFileStream?.filePath;
+
+    List<int> micSamples = await parsePcm16("record_input.pcm");
+    List<int> refSamples = await parsePcm16("record_output.pcm");
+    int numFrames = refSamples.length ~/ 256;
+    for (var i = 0; i < numFrames; i++) {
+      List<int> micFrame = micSamples.sublist(i * 256, i * 256 + 256);
+      List<int> refFrame = refSamples.sublist(i * 256, i * 256 + 256);
+      sendPort?.send([micFrame, refFrame]);
+      sleep(const Duration(milliseconds: 20));
+    }
+    print("done");
+  }
+
+  void initPort() async {
+    receivePort = ReceivePort();
+    receivePort?.listen((msg) {
+      if (msg is SendPort) {
+        sendPort = msg;
+      } else if (msg is List<double>) {
+        processCache = msg;
+
+        processStream.update(processCache);
+        setState(() {});
+        Uint8List u8Data = doubleList2Uint8List(msg);
+        // TODO 取消注释
+        processFileStream?.update(u8Data, writeToCache: false);
+      } else if (msg == null) {
+        print("result is null");
+      }
+    });
+    var rootToken = RootIsolateToken.instance!;
+    await Isolate.spawn<_IsolateData>(
+        _isolateEntry, _IsolateData(token: rootToken, function: inferenceTask, answerPort: receivePort!.sendPort));
+
+    final rawAssetFile = await rootBundle.load("assets/msa_dpcrn_fast.$mode");
+    final bytes = rawAssetFile.buffer.asUint8List();
+
+    sendPort?.send(bytes);
   }
 
   Future<void> checkAndRequestPermission() async {
@@ -314,6 +296,7 @@ class _MyHomePageState extends State<MyHomePage> {
 
   @override
   void dispose() {
+    sendPort?.send("exit");
     stopPlayer();
     _mPlayer!.closePlayer();
     _mPlayer = null;
@@ -321,18 +304,20 @@ class _MyHomePageState extends State<MyHomePage> {
     outputStream.dispose();
     processStream.dispose();
     stop();
-    _mRecorder!.closeRecorder();
-    _mRecorder = null;
+    SystemAudioRecorder.dispose();
     inputFileStream?.reset();
     inputFileStream = null;
     outputFileStream?.reset();
     outputFileStream = null;
     processFileStream?.reset();
     processFileStream = null;
+    // msaAce?.release();
+    releaseOrtEnv();
     super.dispose();
   }
 
   void reset() {
+    sendPort?.send("reset");
     syncInputStart = true;
     syncOutputStart = true;
     inputStartTime = null;
@@ -340,16 +325,17 @@ class _MyHomePageState extends State<MyHomePage> {
     inputFileStream?.reset();
     processFileStream?.reset();
     outputFileStream?.reset();
+    // msaAce?.reset();
   }
 
   Future<void> _openRecorder() async {
-    await _mRecorder!.openRecorder();
+    await SystemAudioRecorder.openRecorder(sampleRate: sampleRate, bufferSize: bytesSize);
 
     final session = await AudioSession.instance;
     await session.configure(AudioSessionConfiguration(
       avAudioSessionCategory: AVAudioSessionCategory.playAndRecord,
       avAudioSessionCategoryOptions:
-      AVAudioSessionCategoryOptions.allowBluetooth | AVAudioSessionCategoryOptions.defaultToSpeaker,
+          AVAudioSessionCategoryOptions.allowBluetooth | AVAudioSessionCategoryOptions.defaultToSpeaker,
       avAudioSessionMode: AVAudioSessionMode.spokenAudio,
       avAudioSessionRouteSharingPolicy: AVAudioSessionRouteSharingPolicy.defaultPolicy,
       avAudioSessionSetActiveOptions: AVAudioSessionSetActiveOptions.none,
@@ -362,9 +348,7 @@ class _MyHomePageState extends State<MyHomePage> {
       androidWillPauseWhenDucked: true,
     ));
 
-    setState(() {
-      _mRecorderIsInited = true;
-    });
+    setState(() {});
   }
 
   void showAlertDialog(content) {
@@ -391,205 +375,61 @@ class _MyHomePageState extends State<MyHomePage> {
     await _mPlayer!.stopPlayer();
   }
 
-  List<double> uint8LtoDoubleL(Uint8List rawData) {
-    List<double> doubleArray = List.empty(growable: true);
-    ByteData byteData = ByteData.sublistView(rawData);
-    for (var i = 0; i < byteData.lengthInBytes; i += 2) {
-      doubleArray.add(byteData.getInt16(i, Endian.little).toInt() / 65535);
-    }
-    return doubleArray;
-  }
-
-  Future<void> process(numSkipFrame, numSkipPoints) async {
-    processCache = inputCache.map((e) => e * 2).toList();
-    setState(() {
-      processStream.update(processCache);
-    });
-    List<int> temp = processCache.map((e) => (e * 65535).toInt()).toList();
-    Int16List int16Temp = Int16List.fromList(temp);
-    final byteBuffer = ByteData(int16Temp.lengthInBytes);
-    for (int i = 0; i < int16Temp.length; i++) {
-      byteBuffer.setInt16(i * 2, int16Temp[i], Endian.little);
-    }
-    processFileStream?.update(byteBuffer.buffer.asUint8List(), numSkipFrame, numSkipPoints);
-  }
-
-  List<int> calculateStartInfo(int time) {
-    int points = (space * time).round();
-    int numFrame = points ~/ frameSize;
-    int numPoints = (points % frameSize) ~/ 2 * 2;
-    return [numFrame, numPoints];
-  }
-
-  Future<void> recordInput() async {
-    assert(_mRecorderIsInited && _mPlayer!.isStopped);
+  Future<void> startRecording() async {
     await inputFileStream?.init();
     inputPath = inputFileStream?.filePath;
     await processFileStream?.init();
     processedPath = processFileStream?.filePath;
-    var recordingDataController = StreamController<Uint8List>();
-    _mRecordingDataSubscription = recordingDataController.stream.listen((buffer) async {
-      if (isRecording) {
-        inputStartTime ??= DateTime.now();
-        inputEndTime = DateTime.now();
-        inputCache = uint8LtoDoubleL(buffer);
-        // Buffer(inputCache, timestamp);
-        setState(() {
-          inputStream.update(inputCache);
-        });
-        if (syncInputStart) {
-          if (inputStartTime != null && outputStartTime != null) {
-            int diffTime = inputStartTime!.microsecondsSinceEpoch - outputStartTime!.microsecondsSinceEpoch;
-            if (diffTime <= 0) {
-              // 说明input先录，无需补零
-              inputFileStream?.update(buffer, 0, 0);
-              process(0, 0);
-            } else {
-              // 说明input后录，需要补零
-              List<int> startInfo = calculateStartInfo(diffTime);
-              inputFileStream?.update(buffer, startInfo[0], startInfo[1]);
-              process(startInfo[0], startInfo[1]);
-            }
-            syncInputStart = false;
-          } else {
-            inputFileStream?.update(buffer, null, null);
-            process(null, null);
-          }
-        } else {
-          inputFileStream?.update(buffer, null, null);
-          process(null, null);
-        }
-      }
-
-    });
-    await _mRecorder!.startRecorder(
-      toStream: recordingDataController.sink,
-      codec: Codec.pcm16,
-      numChannels: 1,
-      sampleRate: sampleRate,
-      bufferSize: frameSize,
-    );
-    setState(() {});
-  }
-
-  Future<bool> requestRecordOutput() async {
-    bool start = await SystemAudioRecorder.requestRecord("test",
-        titleNotification: "titleNotification", messageNotification: "messageNotification", sampleRate: 16000);
-    return start;
-  }
-
-  Future<void> recordOutput() async {
     await outputFileStream?.init();
     outputPath = outputFileStream?.filePath;
-    bool start = await SystemAudioRecorder.startRecord;
-    if (_audioSubscription == null && start) {
-      _audioSubscription = SystemAudioRecorder.audioStream.receiveBroadcastStream({"config": "null"}).listen((buffer) {
-        if (isRecording) {
-          outputStartTime ??= DateTime.now();
-          outputEndTime = DateTime.now();
+    if (chooseFilePath == null) {
+      inputFileStream!.update(Uint8List(bytesSize * padFramesNum));
+    } else {
+      inputFileStream!.update(Uint8List(bytesSize * padFramesNum));
+    }
 
-          if (syncOutputStart) {
-            if (inputStartTime != null && outputStartTime != null) {
-              int diffTime = outputStartTime!.microsecondsSinceEpoch - inputStartTime!.microsecondsSinceEpoch;
-              if (diffTime <= 0) {
-                // output先录
-                outputFileStream?.update(buffer, 0, 0);
+    bool isStarted = await SystemAudioRecorder.startRecord();
+    if (isStarted && audioSubscription == null) {
+      audioSubscription = SystemAudioRecorder.audioStream.receiveBroadcastStream({}).listen((buffer) {
+        if (isRecording) {
+          var iBuffer = buffer['input'];
+          var oBuffer = buffer['output'];
+
+          inputCache = uint8LtoDoubleList(iBuffer);
+
+          inputStream.update(inputCache);
+
+          inputFileStream?.update(iBuffer);
+
+          outputCache = uint8LtoDoubleList(oBuffer);
+
+          outputStream.update(outputCache);
+
+          outputFileStream?.update(oBuffer);
+
+          int canSampleSize =
+              min(inputFileStream!.canSampleSize(sampleSize: 256), outputFileStream!.canSampleSize(sampleSize: 256));
+          // print(canSampleSize);
+          if (canSampleSize >= 1) {
+            List<int>? micFrame = inputFileStream!.sample3(canSampleSize, sampleSize: 256);
+            List<int>? refFrame = outputFileStream!.sample3(canSampleSize, sampleSize: 256);
+            if (micFrame != null && refFrame != null) {
+              if (isProcess) {
+
+                sendPort?.send([micFrame, refFrame]);
               } else {
-                // output后录，需要补零
-                List<int> startInfo = calculateStartInfo(diffTime);
-                outputFileStream?.update(buffer, startInfo[0], startInfo[1]);
+                processCache = inputCache.map((e) => e * 2).toList();
+                setState(() {
+                  processStream.update(processCache);
+                });
+                Uint8List processUint8List = doubleList2Uint8List(processCache);
+                processFileStream?.update(processUint8List);
               }
-              syncOutputStart = false;
-            } else {
-              outputFileStream?.update(buffer, null, null);
             }
           }
-          else {
-            outputFileStream?.update(buffer, null, null);
-          }
-          setState(() {
-            outputStream.update(uint8LtoDoubleL(buffer));
-          });
         }
       });
     }
-  }
-
-  Future<void> stopRecordInput() async {
-    await _mRecorder!.stopRecorder();
-    if (_mRecordingDataSubscription != null) {
-      await _mRecordingDataSubscription!.cancel();
-      _mRecordingDataSubscription = null;
-    }
-    _mplaybackReady = true;
-    // _bufferTimer?.cancel();
-  }
-
-  Future<void> stopRecordOutput() async {
-    await SystemAudioRecorder.stopRecord;
-    if (_audioSubscription != null) {
-      _audioSubscription?.cancel();
-      _audioSubscription = null;
-    }
-  }
-
-  List<int> calculateSaveInfo() {
-    List<int> saveInfo = [0, 0, 0, 0]; // input_frame, input_point, output_frame, output_point
-    int inputSaveFrames = inputFileStream!.numSaveFrames;
-    int inputSavePoints = inputFileStream!.numSavePoints;
-    int inputFileCacheLength = inputFileStream!.fileCacheLength ~/ inputFileStream!.frameSize;
-    int outputSaveFrames = outputFileStream!.numSaveFrames;
-    int outputSavePoints = outputFileStream!.numSavePoints;
-    int outputFileCacheLength = outputFileStream!.fileCacheLength ~/ outputFileStream!.frameSize;
-
-    int inputMaxFrames = inputSaveFrames + inputFileCacheLength;
-
-    int outputMaxFrames = outputSaveFrames + outputFileCacheLength;
-
-    int maxFrames = min(inputMaxFrames, outputMaxFrames);
-    saveInfo[0] = maxFrames - inputSaveFrames;
-    saveInfo[2] = maxFrames - outputSaveFrames;
-    if (inputSavePoints > 0) {
-      saveInfo[0] -= 1;
-      saveInfo[1] = inputFileStream!.frameSize - inputSavePoints;
-    }
-    if (outputSavePoints > 0) {
-      saveInfo[1] -= 1;
-      saveInfo[3] = outputFileStream!.frameSize - outputSavePoints;
-    }
-    return saveInfo;
-  }
-
-  Future<void> stop() async {
-    if (!isRecording) {
-      showAlertDialog("还没有录音");
-      return;
-    }
-
-    print(outputStartTime!.difference(outputClickStartTime!));
-    print(inputStartTime!.difference(inputClickStartTime!));
-
-    timer?.cancel();
-
-    await stopRecordOutput();
-    await stopRecordInput();
-
-    setState(() {
-      isRecording = false;
-    });
-    List<int> saveInfo = calculateSaveInfo();
-    print(saveInfo);
-    inputFileStream?.close(saveInfo[0], saveInfo[1]);
-    outputFileStream?.close(saveInfo[2], saveInfo[3]);
-    processFileStream?.close(saveInfo[0], saveInfo[1]);
-    print("isf: ${inputFileStream!.numSaveFrames}, isp: ${inputFileStream!.numSavePoints}");
-    print("osf: ${outputFileStream!.numSaveFrames}, osp: ${outputFileStream!.numSavePoints}");
-    // print(outputStartTime!.difference(inputStartTime!));
-    // print(outputEndTime!.difference(inputEndTime!));
-    inputStream.reset();
-    outputStream.reset();
-    processStream.reset();
-    chooseFilePath = null;
   }
 
   Future<void> record() async {
@@ -602,20 +442,61 @@ class _MyHomePageState extends State<MyHomePage> {
       return;
     }
     reset();
-    bool start = await requestRecordOutput();
-    if (start) {
-      await recordOutput();
-      outputClickStartTime = DateTime.now();
+    bool isConfirm = await SystemAudioRecorder.requestRecord("record",
+        titleNotification: "titleNotification", messageNotification: "messageNotification");
 
-      await recordInput();
-      inputClickStartTime = DateTime.now();
+    if (isConfirm) {
+      startRecording();
       setState(() {
         isRecording = true;
       });
+
       if (chooseFilePath != null) {
         play(chooseFilePath, choose: true);
+        // inputFileStream!.sink!.add(Uint8List((frameSize * 1).toInt()));
+        firstPlay = false;
       }
+      // timer = Timer.periodic(const Duration(milliseconds: 10), (t) async {
+      //   if (!isRecording) {
+      //     if (timer!.isActive) timer?.cancel();
+      //   }
+      //   if (inputFileStream!.canSample() && outputFileStream!.canSample()) {
+      //     List<int>? micFrame = inputFileStream!.sample(); // 256
+      //     List<int>? refFrame = outputFileStream!.sample();
+      //
+      //     if (micFrame != null && refFrame != null) {
+      //
+      //       sendPort?.send([micFrame, refFrame]);
+      //     }
+      //   }
+      // });
     }
+  }
+
+  Future<void> stop() async {
+    if (!isRecording) {
+      showAlertDialog("还没有录音");
+      return;
+    }
+
+    setState(() {
+      isRecording = false;
+    });
+    timer?.cancel();
+    _mplaybackReady = true;
+    await SystemAudioRecorder.stopRecord();
+    if (audioSubscription != null) {
+      audioSubscription?.cancel();
+      audioSubscription = null;
+    }
+    inputFileStream?.close();
+    outputFileStream?.close();
+    processFileStream?.close();
+
+    inputStream.reset();
+    outputStream.reset();
+    processStream.reset();
+    chooseFilePath = null;
   }
 
   void showToast(msg) {
@@ -657,7 +538,7 @@ class _MyHomePageState extends State<MyHomePage> {
 
       showToast("开始播放");
 
-      if (_mPlayerIsInited && _mplaybackReady && _mRecorder!.isStopped && _mPlayer!.isStopped) {
+      if (_mPlayerIsInited && _mplaybackReady && !isRecording && _mPlayer!.isStopped) {
         await _mPlayer!.startPlayer(
             fromURI: path,
             sampleRate: sampleRate,
@@ -707,9 +588,53 @@ class _MyHomePageState extends State<MyHomePage> {
         child: Column(
           mainAxisAlignment: MainAxisAlignment.center,
           children: <Widget>[
-            TextPainterButton(playfn: playInput, text: "input", waveform: inputStream.stream!),
-            TextPainterButton(playfn: playOutput, text: "output", waveform: outputStream.stream!),
-            TextPainterButton(playfn: playProcessed, text: "processed", waveform: processStream.stream!),
+            // NumberControllerWidget(
+            //   numText: '$padFramesNum',
+            // ),
+            // TextField(
+            //   controller: _controller,
+            //   keyboardType: TextInputType.number,
+            //   decoration: const InputDecoration(
+            //     border: OutlineInputBorder(),
+            //     labelText: '请输入数字',
+            //     hintText: '例如：10',
+            //   ),
+            //   onChanged: (value) {
+            //     setState(() {
+            //       try{
+            //         padFramesNum = int.parse(value);
+            //         if (padFramesNum < 0) {
+            //           padFramesNum = 10;
+            //         }
+            //       }catch(e){
+            //         padFramesNum = 10;
+            //       }
+            //
+            //     });
+            //   },
+            // ),
+
+            TextPainterButton(
+              playfn: playInput,
+              text: "input",
+              waveform: inputStream.stream!,
+              frameSize: frameSize,
+              pointSpace: pointSpace,
+            ),
+            TextPainterButton(
+              playfn: playOutput,
+              text: "output",
+              waveform: outputStream.stream!,
+              frameSize: frameSize,
+              pointSpace: pointSpace,
+            ),
+            TextPainterButton(
+              playfn: playProcessed,
+              text: "processed",
+              waveform: processStream.stream!,
+              frameSize: frameSize,
+              pointSpace: pointSpace,
+            ),
             const SizedBox(
               height: 20,
             ),
@@ -717,8 +642,37 @@ class _MyHomePageState extends State<MyHomePage> {
               mainAxisAlignment: MainAxisAlignment.spaceEvenly,
               children: [
                 ElevatedButton(
-                  onPressed: () {
+                  onPressed: () async {
                     record();
+                    // testQmf();  // 不一致
+                    // testSTFT();
+
+                    // processFileStream?.reset();
+                    // sendPort?.send("reset");
+                    // await processFileStream?.init();
+                    // processedPath = processFileStream?.filePath;
+                    // List<int> micFrame = List.generate(1024, (e) => e * 10 + 100);
+                    // List<int> refFrame = List.generate(1024, (e) => e * 10);
+                    //
+                    // sendPort?.send([micFrame.sublist(256, 512), refFrame.sublist(256, 512)]);
+                    // sendPort?.send([micFrame.sublist(512, 768), refFrame.sublist(512, 768)]);
+                    // sendPort?.send([micFrame.sublist(768, 1024), refFrame.sublist(768, 1024)]);
+
+                    // processFileStream?.reset();
+                    // sendPort?.send("reset");
+                    // await processFileStream?.init();
+                    // processedPath = processFileStream?.filePath;
+                    //
+                    // List<int> micSamples = await parsePcm16("record_input.pcm");
+                    // List<int> refSamples = await parsePcm16("record_output.pcm");
+                    // int numFrames = refSamples.length ~/ 256;
+                    // for (var i = 0; i < numFrames; i++){
+                    //   List<int> micFrame = micSamples.sublist(i * 256, i * 256 + 256);
+                    //   List<int> refFrame = refSamples.sublist(i * 256, i * 256 + 256);
+                    //   sendPort?.send([micFrame, refFrame]);
+                    //   sleep(const Duration(milliseconds: 80));
+                    // }
+                    // print("done");
                   },
                   child: const Text("开始录制"),
                 ),
@@ -748,6 +702,16 @@ class _MyHomePageState extends State<MyHomePage> {
                       }
                       if (chooseFilePath != null && isRecording) {
                         play(chooseFilePath, choose: true);
+                        playAudio = true;
+                        if (firstPlay) {
+                          firstPlay = false;
+                        }
+                        // if (firstPlay){
+                        //   inputFileStream!.sink!.add(Uint8List(frameSize * 2));
+                        //   firstPlay = false;
+                        // }else{
+                        //   inputFileStream!.sink!.add(Uint8List((frameSize * 1).toInt()));
+                        // }
                       }
                     },
                     child: const Text("播放文件")),
@@ -762,7 +726,28 @@ class _MyHomePageState extends State<MyHomePage> {
                     },
                     child: const Text("停止播放"))
               ],
-            )
+            ),
+            const SizedBox(
+              height: 20,
+            ),
+            Row(
+              mainAxisAlignment: MainAxisAlignment.center,
+              children: [
+                const Text("模型处理"),
+                const SizedBox(
+                  width: 20,
+                ),
+                Switch(
+                    value: isProcess,
+                    onChanged: (bool value) {
+                      setState(() {
+                        isProcess = value;
+                      });
+                    }),
+              ],
+            ),
+
+            const Text("Version: 1.0.4(2024-12-20)")
           ],
         ),
       ),

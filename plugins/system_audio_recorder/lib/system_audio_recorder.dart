@@ -13,42 +13,42 @@ class SystemAudioRecorder {
   Future<String?> getPlatformVersion() {
     return SystemAudioRecorderPlatform.instance.getPlatformVersion();
   }
-  static Future<bool> requestRecord(String name, {String? titleNotification, String? messageNotification, int? sampleRate}) async {
-    try {
-      if (titleNotification == null) {
-        titleNotification = "";
-      }
-      if (messageNotification == null) {
-        messageNotification = "";
-      }
 
-      if (sampleRate == null){
-        sampleRate = 44100;
-      }
+  static Future<bool> openRecorder({
+    int sampleRate = 16000,
+    int bufferSize = 640,
+  }) async {
+    final isOpen = await SystemAudioRecorderPlatform.instance.openRecorder(sampleRate: sampleRate, bufferSize: bufferSize);
+    return isOpen;
+  }
+
+  static Future<bool> requestRecord(String name, {String? titleNotification, String? messageNotification}) async {
+    try {
+      titleNotification ??= "";
+      messageNotification ??= "";
 
       await _maybeStartFGS(titleNotification, messageNotification);
       final bool start = await SystemAudioRecorderPlatform.instance.requestRecord(
         name,
         notificationTitle: titleNotification,
         notificationMessage: messageNotification,
-        sampleRate: sampleRate,
       );
 
       return start;
     } catch (err) {
-      print("startRecord err");
+      print("requestRecord err");
       print(err);
     }
 
     return false;
   }
 
-  static Future<bool> get startRecord async {
+  static Future<bool> startRecord() async {
     try {
 
-      final bool start = await SystemAudioRecorderPlatform.instance.startRecord();
+      final bool isStart = await SystemAudioRecorderPlatform.instance.startRecord();
 
-      return start;
+      return isStart;
     } catch (err) {
       print("startRecord err");
       print(err);
@@ -56,9 +56,13 @@ class SystemAudioRecorder {
     return false;
   }
 
-  static Future<String> get stopRecord async {
+  static Future<void> dispose() async{
+    await SystemAudioRecorderPlatform.instance.dispose();
+  }
+
+  static Future<String> stopRecord() async {
     try {
-      final String path = await SystemAudioRecorderPlatform.instance.stopRecord;
+      final String path = await SystemAudioRecorderPlatform.instance.stopRecord();
       if (!kIsWeb && Platform.isAndroid) {
         FlutterForegroundTask.stopService();
       }
