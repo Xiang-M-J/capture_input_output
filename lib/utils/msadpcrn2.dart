@@ -9,6 +9,7 @@ import 'package:flutter/services.dart';
 import 'package:onnxruntime/onnxruntime.dart';
 
 int stateLength = 64;
+int stateLength2 = 48;
 
 enum FrameMode{
   mic,
@@ -24,13 +25,14 @@ class MsaDpcrn2{
   int sampleSize = 256;
   int freqDim = 0;
   double pi = 3.14159265358979323846;
+  List<int> timeDelays = [];
 
   final stopWatch = Stopwatch();
   List<double> win = [];
   List<double>? refCacheLow;
   List<double>? micCacheLow;
-  List<List<List<List<double>>>> state0 = List<List<List<List<double>>>>.filled(4, List<List<List<double>>>.filled(1, List<List<double>>.filled(stateLength, List.filled(64, 0.0))));
-  List<List<List<List<double>>>> state1 = List<List<List<List<double>>>>.filled(4, List<List<List<double>>>.filled(1, List<List<double>>.filled(stateLength, List.filled(64, 0.0))));
+  List<List<List<List<double>>>> state0 = List<List<List<List<double>>>>.filled(4, List<List<List<double>>>.filled(1, List<List<double>>.filled(stateLength, List.filled(stateLength2, 0.0))));
+  List<List<List<List<double>>>> state1 = List<List<List<List<double>>>>.filled(4, List<List<List<double>>>.filled(1, List<List<double>>.filled(stateLength, List.filled(stateLength2, 0.0))));
 
   MsaDpcrn2();
 
@@ -86,8 +88,8 @@ class MsaDpcrn2{
     micCacheLow?.clear();
     refCacheLow = null;
     micCacheLow = null;
-    state0 = List<List<List<List<double>>>>.filled(4, List<List<List<double>>>.filled(1, List<List<double>>.filled(stateLength, List.filled(64, 0.0))));
-    state1 = List<List<List<List<double>>>>.filled(4, List<List<List<double>>>.filled(1, List<List<double>>.filled(stateLength, List.filled(64, 0.0))));
+    state0 = List<List<List<List<double>>>>.filled(4, List<List<List<double>>>.filled(1, List<List<double>>.filled(stateLength, List.filled(stateLength2, 0.0))));
+    state1 = List<List<List<List<double>>>>.filled(4, List<List<List<double>>>.filled(1, List<List<double>>.filled(stateLength, List.filled(stateLength2, 0.0))));
     resetStates();
   }
 
@@ -143,8 +145,20 @@ class MsaDpcrn2{
     return data;
   }
 
+  void printTimeCost(){
+    int s = 0;
+    if(timeDelays.isEmpty){
+      return;
+    }
+    for(var i = 0; i < timeDelays.length; i++){
+      s += timeDelays[i];
+    }
+    s = s ~/ timeDelays.length;
+    print("mean inference time: $s");
+  }
 
   List<double>? predictMultiFrames2(List<List<int>> frames) {
+    stopWatch.start();
     int numFrames = frames[0].length ~/ sampleSize;
 
     List<double> wav = [];
@@ -160,8 +174,8 @@ class MsaDpcrn2{
       final micOrt = OrtValueTensor.createTensorWithDataList(
           micSpec, [1, 2, 1, freqDim]);
       final refOrt = OrtValueTensor.createTensorWithDataList(refSpec, [1, 2, 1, freqDim]);
-      final state0Ort = OrtValueTensor.createTensorWithDataList(convertDoubleTensor(state0), [4, 1, stateLength, 64]);
-      final state1Ort = OrtValueTensor.createTensorWithDataList(convertDoubleTensor(state1), [4, 1, stateLength, 64]);
+      final state0Ort = OrtValueTensor.createTensorWithDataList(convertDoubleTensor(state0), [4, 1, stateLength, stateLength2]);
+      final state1Ort = OrtValueTensor.createTensorWithDataList(convertDoubleTensor(state1), [4, 1, stateLength, stateLength2]);
       final runOptions = OrtRunOptions();
       // final inputs = {'speech': inputOrt, "in_cache0": cache0,"in_cache1": cache1,"in_cache2": cache2,"in_cache3": cache3, };
       final inputs = {"mic": micOrt, "ref": refOrt, "h": state0Ort, "c": state1Ort};
@@ -203,6 +217,9 @@ class MsaDpcrn2{
         }
       }
     }
+    stopWatch.stop();
+    timeDelays.add(stopWatch.elapsedMilliseconds);
+    stopWatch.reset();
     return wav;
   }
   // List<double>? testPredictMultiFrames() {

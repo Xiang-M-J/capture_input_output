@@ -8,16 +8,16 @@ import 'package:audio_session/audio_session.dart';
 import 'package:capture_input_ouput/stream_utils.dart';
 import 'package:capture_input_ouput/text_painter_button.dart';
 import 'package:capture_input_ouput/utils/msadpcrn2.dart';
-import 'package:capture_input_ouput/utils/msadpcrnRknn.dart';
+// import 'package:capture_input_ouput/utils/msadpcrnRknn.dart';
 import 'package:capture_input_ouput/utils/type_converter.dart';
 import 'package:flutter/material.dart';
+import 'package:flutter_sound/public/flutter_sound_recorder.dart';
 import 'package:onnxruntime/onnxruntime.dart';
 import 'package:permission_handler/permission_handler.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_sound/flutter_sound.dart';
 import 'package:path_provider/path_provider.dart';
-import 'package:permission_handler/permission_handler.dart';
 import 'package:system_audio_recorder/system_audio_recorder.dart';
 
 import 'package:file_selector/file_selector.dart';
@@ -30,7 +30,7 @@ void main() {
   runApp(const MyApp());
 }
 
-const String mode = "rknn";
+const String mode = "onnx";
 
 // 127.0.0.1:5037
 class MyApp extends StatelessWidget {
@@ -69,12 +69,15 @@ void _isolateEntry(_IsolateData isolateData) async {
 void inferenceTask(SendPort port) async {
   // initOrtEnv();
 
-  // MsaDpcrn2 msaAce = MsaDpcrn2();
-  MsaDpcrnRknn msaAce = MsaDpcrnRknn();
-  msaAce.init();
+  MsaDpcrn2 msaAce = MsaDpcrn2();
 
+  // MsaDpcrnRknn msaAce = MsaDpcrnRknn();
+  // msaAce.init();
+
+  Stopwatch stopwatch = Stopwatch();
   final receivePort = ReceivePort();
   port.send(receivePort.sendPort);
+  List<int> timeCost = [];
 
   await for (var msg in receivePort) {
     if (msg is String) {
@@ -86,11 +89,24 @@ void inferenceTask(SendPort port) async {
       } else if (msg == "reset") {
         msaAce.reset();
         // port.send("has reset");
+      } else if (msg == "performance") {
+        msaAce.printTimeCost();
+        if (timeCost.isNotEmpty) {
+          int s = 0;
+          for (var i = 0; i < timeCost.length; i++) {
+            s += timeCost[i];
+          }
+          print(s / timeCost.length);
+        }
       }
     } else if (msg is Uint8List) {
       msaAce.initModelByBuffer(msg);
     } else if (msg is List<List<int>>) {
+      stopwatch.start();
       List<double>? result = await msaAce.predictMultiFrames2(msg);
+      stopwatch.stop();
+      timeCost.add(stopwatch.elapsedMilliseconds);
+      stopwatch.reset();
       // List<double>? result = msaAce.testPredictMultiFrames();
       port.send(result);
     } else {
@@ -123,6 +139,7 @@ class MyHomePage extends StatefulWidget {
 
 class _MyHomePageState extends State<MyHomePage> {
   FlutterSoundPlayer? _mPlayer = FlutterSoundPlayer();
+  FlutterSoundRecorder? _mRecorder = FlutterSoundRecorder();
   bool _mPlayerIsInited = false;
   String? inputPath;
   String? outputPath;
@@ -149,7 +166,6 @@ class _MyHomePageState extends State<MyHomePage> {
   FixedLengthStream outputStream = FixedLengthStream();
   FixedLengthStream processStream = FixedLengthStream();
 
-  StreamSubscription? audioSubscription;
   bool isRecording = false;
   Timer? timer;
   String? chooseFilePath;
@@ -173,9 +189,12 @@ class _MyHomePageState extends State<MyHomePage> {
   List<int> usedTimes = [];
   ReceivePort? receivePort;
   SendPort? sendPort;
-  int pointSpace = 64; // 绘图时每隔pointSpace个点画一次
+  int pointSpace = 64; // 绘图时每隔 pointSpace 个点画一次
   bool isProcess = true;
-  int padFramesNum = 25; // 手机上是10
+  int padFramesNum = 5;
+
+  StreamSubscription? inputSubscription;
+  StreamSubscription? outputSubscription;
 
   @override
   void initState() {
@@ -251,7 +270,6 @@ class _MyHomePageState extends State<MyHomePage> {
         processStream.update(processCache);
         setState(() {});
         Uint8List u8Data = doubleList2Uint8List(msg);
-        // TODO 取消注释
         processFileStream?.update(u8Data, writeToCache: false);
       } else if (msg == null) {
         print("result is null");
@@ -311,6 +329,8 @@ class _MyHomePageState extends State<MyHomePage> {
     outputFileStream = null;
     processFileStream?.reset();
     processFileStream = null;
+    inputSubscription?.cancel();
+    inputSubscription = null;
     // msaAce?.release();
     releaseOrtEnv();
     super.dispose();
@@ -325,12 +345,17 @@ class _MyHomePageState extends State<MyHomePage> {
     inputFileStream?.reset();
     processFileStream?.reset();
     outputFileStream?.reset();
+    processStream.reset();
     // msaAce?.reset();
   }
 
   Future<void> _openRecorder() async {
-    await SystemAudioRecorder.openRecorder(sampleRate: sampleRate, bufferSize: bytesSize);
-
+    // await SystemAudioRecorder.openRecorder(sampleRate: sampleRate, bufferSize: bytesSize);
+    var status = await Permission.microphone.request();
+    if (status != PermissionStatus.granted) {
+      throw RecordingPermissionException('Microphone permission not granted');
+    }
+    await _mRecorder!.openRecorder();
     final session = await AudioSession.instance;
     await session.configure(AudioSessionConfiguration(
       avAudioSessionCategory: AVAudioSessionCategory.playAndRecord,
@@ -383,29 +408,44 @@ class _MyHomePageState extends State<MyHomePage> {
     await outputFileStream?.init();
     outputPath = outputFileStream?.filePath;
     if (chooseFilePath == null) {
-      inputFileStream!.update(Uint8List(bytesSize * padFramesNum));
+      // inputFileStream!.update(Uint8List(bytesSize * padFramesNum));
+      outputFileStream!.update(Uint8List(bytesSize * padFramesNum));
     } else {
-      inputFileStream!.update(Uint8List(bytesSize * padFramesNum));
+      // inputFileStream!.update(Uint8List(bytesSize * padFramesNum));
+      outputFileStream!.update(Uint8List(bytesSize * padFramesNum));
     }
+    setState(() {
+      isRecording = true;
+    });
+    if (outputSubscription == null && inputSubscription == null) {
+      var recordingDataController = StreamController<Uint8List>();
 
-    bool isStarted = await SystemAudioRecorder.startRecord();
-    if (isStarted && audioSubscription == null) {
-      audioSubscription = SystemAudioRecorder.audioStream.receiveBroadcastStream({}).listen((buffer) {
+      inputSubscription = recordingDataController.stream.listen((buffer) async {
         if (isRecording) {
-          var iBuffer = buffer['input'];
-          var oBuffer = buffer['output'];
-
-          inputCache = uint8LtoDoubleList(iBuffer);
-
+          inputCache = uint8LtoDoubleList(buffer);
+          // print("input length: ${inputCache.length}");
           inputStream.update(inputCache);
 
-          inputFileStream?.update(iBuffer);
+          inputFileStream?.update(buffer);
+        }
+      });
+      await _mRecorder!.startRecorder(
+        toStream: recordingDataController.sink,
+        codec: Codec.pcm16,
+        numChannels: 1,
+        sampleRate: sampleRate,
+        // bufferSize: 320,
+      );
 
-          outputCache = uint8LtoDoubleList(oBuffer);
+      await SystemAudioRecorder.startRecord();
 
+      outputSubscription = SystemAudioRecorder.audioStream.receiveBroadcastStream({}).listen((buffer) {
+        if (isRecording) {
+          outputCache = uint8LtoDoubleList(buffer);
+          // print("output length: ${outputCache.length}");
           outputStream.update(outputCache);
 
-          outputFileStream?.update(oBuffer);
+          outputFileStream?.update(buffer);
 
           int canSampleSize =
               min(inputFileStream!.canSampleSize(sampleSize: 256), outputFileStream!.canSampleSize(sampleSize: 256));
@@ -413,6 +453,7 @@ class _MyHomePageState extends State<MyHomePage> {
           if (canSampleSize >= 1) {
             List<int>? micFrame = inputFileStream!.sample3(canSampleSize, sampleSize: 256);
             List<int>? refFrame = outputFileStream!.sample3(canSampleSize, sampleSize: 256);
+            // processFileStream
             if (micFrame != null && refFrame != null) {
               if (isProcess) {
 
@@ -446,30 +487,13 @@ class _MyHomePageState extends State<MyHomePage> {
         titleNotification: "titleNotification", messageNotification: "messageNotification");
 
     if (isConfirm) {
-      startRecording();
-      setState(() {
-        isRecording = true;
-      });
+      await startRecording();
 
       if (chooseFilePath != null) {
         play(chooseFilePath, choose: true);
         // inputFileStream!.sink!.add(Uint8List((frameSize * 1).toInt()));
         firstPlay = false;
       }
-      // timer = Timer.periodic(const Duration(milliseconds: 10), (t) async {
-      //   if (!isRecording) {
-      //     if (timer!.isActive) timer?.cancel();
-      //   }
-      //   if (inputFileStream!.canSample() && outputFileStream!.canSample()) {
-      //     List<int>? micFrame = inputFileStream!.sample(); // 256
-      //     List<int>? refFrame = outputFileStream!.sample();
-      //
-      //     if (micFrame != null && refFrame != null) {
-      //
-      //       sendPort?.send([micFrame, refFrame]);
-      //     }
-      //   }
-      // });
     }
   }
 
@@ -485,18 +509,24 @@ class _MyHomePageState extends State<MyHomePage> {
     timer?.cancel();
     _mplaybackReady = true;
     await SystemAudioRecorder.stopRecord();
-    if (audioSubscription != null) {
-      audioSubscription?.cancel();
-      audioSubscription = null;
+    await _mRecorder?.stopRecorder();
+    if (outputSubscription != null) {
+      outputSubscription?.cancel();
+      outputSubscription = null;
+    }
+    if (inputSubscription != null) {
+      inputSubscription?.cancel();
+      inputSubscription = null;
     }
     inputFileStream?.close();
     outputFileStream?.close();
-    processFileStream?.close();
+    // processFileStream?.close();
 
     inputStream.reset();
     outputStream.reset();
     processStream.reset();
     chooseFilePath = null;
+    sendPort?.send("performance");
   }
 
   void showToast(msg) {
@@ -747,7 +777,7 @@ class _MyHomePageState extends State<MyHomePage> {
               ],
             ),
 
-            const Text("Version: 1.0.4(2024-12-20)")
+            const Text("Version($mode): 1.0.5(2024-12-27)")
           ],
         ),
       ),

@@ -8,6 +8,7 @@ import android.media.AudioFormat
 import android.media.AudioPlaybackCaptureConfiguration
 import android.media.AudioRecord
 import android.media.MediaRecorder
+import android.media.audiofx.NoiseSuppressor
 import android.media.projection.MediaProjection
 import android.media.projection.MediaProjectionManager
 import android.os.Build
@@ -27,8 +28,50 @@ import io.flutter.plugin.common.MethodChannel
 import io.flutter.plugin.common.MethodChannel.MethodCallHandler
 import io.flutter.plugin.common.MethodChannel.Result
 import io.flutter.plugin.common.PluginRegistry
-import java.util.concurrent.ArrayBlockingQueue
 
+class ByteArrayUtils{
+    private val byteArray: MutableList<Byte> = mutableListOf()
+    private val lock = Any()
+
+    fun add(bytes: ByteArray){
+        synchronized(lock){
+            byteArray.addAll(bytes.toList())
+        }
+    }
+
+    fun slice(length: Int): ByteArray{
+        if (byteArray.size < length){
+            throw IllegalArgumentException("length is too big")
+        }
+
+//        val result: MutableList<Byte> = mutableListOf()
+//
+//        for (i: Int in 0 until length){
+//            result.add(byteArray.removeAt(0))
+//        }
+//        Log.i("Hll", result.size.toString())
+//        return result.toByteArray()
+        synchronized(lock){
+            val slice = byteArray.subList(0, length).toByteArray()
+            byteArray.subList(0, length).clear()
+//            repeat(length) {byteArray.removeAt(0)}
+            return slice
+        }
+
+    }
+
+    fun test(length: Int): Boolean{
+        synchronized(lock){
+            return byteArray.size > length
+        }
+    }
+
+    fun clear(){
+        synchronized(lock){
+            byteArray.clear()
+        }
+    }
+}
 
 /** SystemAudioRecorderPlugin */
 class SystemAudioRecorderPlugin : MethodCallHandler, PluginRegistry.ActivityResultListener,
@@ -53,21 +96,27 @@ class SystemAudioRecorderPlugin : MethodCallHandler, PluginRegistry.ActivityResu
 
     //    private var recordingThread: Thread? = null
 //    private var recordingThread: Thread? = null
-    private var bufferSize = 640
+    private var bufferSize = 512
     private var mAudioRecord: AudioRecord? = null
     private var mAudioFormat: AudioFormat? = null
     private var isRecording: Boolean = false
     private var sampleRate: Int = 16000
     private var micRecord: AudioRecord? = null
+    private var noiseSuppressor: NoiseSuppressor? = null
     private var binaryMessenger: BinaryMessenger? = null
     private lateinit var eventChannel: EventChannel
-    private var startTime = mutableListOf(false, false)
+    private val readBufferSize: Int = 512
+    private val bufferSizeInBytes: Int = 1280
 
     private var syncStart: Boolean = true
-    @Volatile
-    private var queue1: ArrayBlockingQueue<ByteArray> = ArrayBlockingQueue(10)  // 队列1
-    @Volatile
-    private var queue2: ArrayBlockingQueue<ByteArray> = ArrayBlockingQueue(10)
+//    @Volatile
+//    private var queue1: ArrayBlockingQueue<ByteArray> = ArrayBlockingQueue(10)  // 队列1
+//    @Volatile
+//    private var queue2: ArrayBlockingQueue<ByteArray> = ArrayBlockingQueue(10)
+
+    private var array1: ByteArrayUtils = ByteArrayUtils()
+
+    private var array2: ByteArrayUtils = ByteArrayUtils()
 
     override fun onAttachedToEngine(flutterPluginBinding: FlutterPlugin.FlutterPluginBinding) {
 //    channel = MethodChannel(flutterPluginBinding.binaryMessenger, "system_audio_recorder")
@@ -202,16 +251,27 @@ class SystemAudioRecorderPlugin : MethodCallHandler, PluginRegistry.ActivityResu
                 sampleRate,
                 AudioFormat.CHANNEL_IN_MONO,
                 AudioFormat.ENCODING_PCM_16BIT,
-                bufferSize
+                bufferSizeInBytes
             )
+//            if (NoiseSuppressor.isAvailable()){
+//                Log.i(TAG, "NoiseSuppressor is available")
+//                noiseSuppressor = NoiseSuppressor.create(micRecord!!.audioSessionId)
+//                noiseSuppressor!!.setEnabled(true);
+//            }else{
+//                Log.i(TAG, "NoiseSuppressor is not available")
+//            }
         }
     }
 
     @RequiresApi(api = Build.VERSION_CODES.Q)
     fun openOutputRecorder(mProjection: MediaProjection): Boolean{
-        Log.i(TAG, "openOutputRecorder")
         if (mAudioRecord == null) {
             Log.i(TAG, "openOutputRecorder")
+            mAudioFormat = AudioFormat.Builder()
+                .setEncoding(AudioFormat.ENCODING_PCM_16BIT)
+                .setSampleRate(this.sampleRate)
+                .setChannelMask(AudioFormat.CHANNEL_IN_MONO)
+                .build()
             val config: AudioPlaybackCaptureConfiguration
             try {
                 config = AudioPlaybackCaptureConfiguration.Builder(mProjection)
@@ -222,7 +282,7 @@ class SystemAudioRecorderPlugin : MethodCallHandler, PluginRegistry.ActivityResu
                 return false
             }
             mAudioRecord = AudioRecord.Builder().setAudioFormat(mAudioFormat!!)
-                .setBufferSizeInBytes(bufferSize).setAudioPlaybackCaptureConfig(config)
+                .setBufferSizeInBytes(bufferSizeInBytes).setAudioPlaybackCaptureConfig(config)
                 .build()
         }
         return true
@@ -232,42 +292,48 @@ class SystemAudioRecorderPlugin : MethodCallHandler, PluginRegistry.ActivityResu
     @RequiresApi(api = Build.VERSION_CODES.Q)
     fun startRecording(): Boolean {
         Log.i(TAG, "startRecording")
-        openInputRecorder()
+//        openInputRecorder()
         openOutputRecorder(mMediaProjection!!)
-        if (mAudioRecord == null || micRecord == null) {
-           return false
+//        if (mAudioRecord == null || micRecord == null) {
+//           return false
+//        }
+        if (mAudioRecord == null){
+            return false
         }
 
         mAudioRecord!!.startRecording()
-        micRecord!!.startRecording()
+//        micRecord!!.startRecording()
 
         isRecording = true
-        iRecordingThread = Thread({ saveData(micRecord, queue1, 0) }, "Input Audio Capture")
-        oRecordingThread = Thread({ saveData(mAudioRecord, queue2, 1)}, "Output Audio Capture")
-        fRecordingThread = Thread({ recording()}, "send data")
+//        iRecordingThread = Thread({ saveData(micRecord, array1, 0) }, "Input Audio Capture")
+//        oRecordingThread = Thread({ saveData(mAudioRecord, array2, 1)}, "Output Audio Capture")
+//        fRecordingThread = Thread({ recording()}, "send data")
 
-        iRecordingThread!!.start()
+        oRecordingThread = Thread({sendData(mAudioRecord)}, "Send output capture")
+
+//        iRecordingThread!!.start()
         oRecordingThread!!.start()
-        fRecordingThread!!.start()
+//        fRecordingThread!!.start()
         return true
     }
 
     private fun recording() {
         try {
             while (isRecording){
-                if (queue1.isNotEmpty() && queue2.isNotEmpty()){
-//                    if (syncStart){
-//                        if (startTime[0] && startTime[1]){
-//                            queue1.clear()
-//                            queue2.clear()
-//                            syncStart = false
-//                        }
+//                if (array1.test(bufferSize) && array2.test(bufferSize)){
+//
+//                    val data1 = array1.slice(bufferSize)
+//                    val data2 = array2.slice(bufferSize)
+//                    activityBinding!!.activity.runOnUiThread {
+//                        val map = mapOf("input" to data1, "output" to data2)
+//                        eventSink?.success(map)
 //                    }
-                    val data1 = queue1.take()
-                    val data2 = queue2.take()
+//                }
+                if (array2.test(bufferSize)){
+
+                    val data2 = array2.slice(bufferSize)
                     activityBinding!!.activity.runOnUiThread {
-                        val map = mapOf("input" to data1, "output" to data2)
-                        eventSink?.success(map)
+                        eventSink?.success(data2)
                     }
                 }
             }
@@ -276,20 +342,46 @@ class SystemAudioRecorderPlugin : MethodCallHandler, PluginRegistry.ActivityResu
         }
     }
 
-    private fun saveData(audioRecord: AudioRecord?, queue: ArrayBlockingQueue<ByteArray>, index: Int) {
+    private fun sendData(audioRecord: AudioRecord?) {
         try {
-            val buffer = ByteArray(bufferSize)
-            while (isRecording && !Thread.currentThread().isInterrupted) {
-                val read = audioRecord?.read(buffer, 0, bufferSize) ?: 0
+
+            val buffer = ByteArray(readBufferSize)
+            while (isRecording) {
+                val read = audioRecord?.read(buffer, 0, readBufferSize) ?: 0
 
                 if (read > 0){
 
-                    if (syncStart){
-                        startTime[index] = true
+//                    if (syncStart){
+//                        startTime[index] = true
+//                    }
+                    val data = buffer.copyOf(read)
+                    activityBinding!!.activity.runOnUiThread {
+                        eventSink?.success(data)
                     }
 
+//                    array.add(data)
+                }
+            }
+        } catch (e: Exception) {
+            e.printStackTrace()
+        }
+    }
+
+    private fun saveData(audioRecord: AudioRecord?, array: ByteArrayUtils, index: Int) {
+        try {
+
+            val buffer = ByteArray(readBufferSize)
+            while (isRecording) {
+                val read = audioRecord?.read(buffer, 0, readBufferSize) ?: 0
+
+                if (read > 0){
+
+//                    if (syncStart){
+//                        startTime[index] = true
+//                    }
+
                     val data = buffer.copyOf(read)
-                    queue.put(data)
+                    array.add(data)
                 }
             }
         } catch (e: Exception) {
@@ -301,10 +393,10 @@ class SystemAudioRecorderPlugin : MethodCallHandler, PluginRegistry.ActivityResu
 
         isRecording = false
         syncStart = true
-        startTime[0] = false
-        startTime[1] = false
-        queue1.clear()
-        queue2.clear()
+//        startTime[0] = false
+//        startTime[1] = false
+        array1.clear()
+        array2.clear()
         mAudioRecord!!.stop()
         mAudioRecord!!.release()
         if (mAudioRecord != null){

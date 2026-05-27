@@ -51,8 +51,8 @@ dependencies:
   system_audio_recorder:
     path: plugins/system_audio_recorder
 
-  import_rknn:
-    path: plugins/import_rknn
+#  import_rknn:
+#    path: plugins/import_rknn
 
 dev_dependencies:
   flutter_test:

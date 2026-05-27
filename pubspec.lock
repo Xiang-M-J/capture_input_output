@@ -272,13 +272,6 @@ packages:
       url: "https://pub.flutter-io.cn"
     source: hosted
     version: "4.0.2"
-  import_rknn:
-    dependency: "direct main"
-    description:
-      path: "plugins/import_rknn"
-      relative: true
-    source: path
-    version: "0.0.1"
   js:
     dependency: transitive
     description:

@@ -18,7 +18,7 @@ rknn_tensor_mem *output_mems[3];
 rknn_input  inputs[4];
 
 int frameSize = 1 * 2 * 1 * 257;
-int stateSize = 4 * 1 * 64 * 64;
+int stateSize = 4 * 1 * 64 * 48;
 
 float *h = nullptr;
 float *c = nullptr;

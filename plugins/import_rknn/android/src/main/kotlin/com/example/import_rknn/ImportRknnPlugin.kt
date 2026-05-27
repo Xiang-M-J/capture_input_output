@@ -15,7 +15,7 @@ class ImportRknnPlugin: FlutterPlugin, MethodCallHandler {
     /// when the Flutter Engine is detached from the Activity
         private lateinit var channel : MethodChannel
     private var specSize: Int = 1 * 2 * 1 * 257
-    private var stateSize: Int = 4 * 1 * 64 * 64
+    private var stateSize: Int = 4 * 1 * 64 * 48
 
     override fun onAttachedToEngine(flutterPluginBinding: FlutterPlugin.FlutterPluginBinding) {
         channel = MethodChannel(flutterPluginBinding.binaryMessenger, "import_rknn")
